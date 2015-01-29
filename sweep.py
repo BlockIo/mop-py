@@ -5,6 +5,7 @@ import base58
 import math
 import requests
 import argparse
+import random
 
 from decimal import *
 from ecdsa import SigningKey, SECP256k1, util
@@ -52,14 +53,28 @@ def sochain_pushtx(network, tx):
 
     return response
 
-# taken from block_io lib
-def compress_pubkey(pubkey):
-    x = pubkey[:32]
-    y = pubkey[33:64]
-    y_int = 0
-    for c in six.iterbytes(y):
-        y_int = 256 * y_int + c
-    return six.int2byte(2+(y_int % 2)) + x
+def get_blockio_signatures(network, from_address, redeem_script, tx):
+    inputs = [];
+    for i in range(0, len(tx.txs_in)):
+        inputs.append({
+            "input_no": i,
+            "data_to_sign": get_sighash_hex(tx, i, redeem_script),
+            "signed_data": "",
+            "address": from_address
+        })
+    data = {"network": network, "reference_id": get_random_hex(), "inputs": inputs }
+    url = "https://dev.block.io:99/api/v2/get_dtrust_signature"
+
+    session = requests.session()
+    response = session.post(url, data="signature_data={0}".format(json.dumps(data)))
+    response = response.json().get("data", {})
+    session.close()
+
+    return response
+
+def get_random_hex():
+    rhex = "{0:032x}".format(random.getrandbits(32*8))
+    return rhex
 
 def unwif(b58cstr):
     return base58.b58decode_check(b58cstr)[1:]
@@ -145,7 +160,9 @@ def make_bare_tx(network, from_address, to_address, redeem_script, version=1):
         spendables.append(spdbl)
 
         # also create this as input
-        ins.append(spdbl.tx_in())
+        as_input = spdbl.tx_in()
+        as_input.sigs = []
+        ins.append(as_input)
 
         # add the estimated size per input
         est_size += in_size
@@ -167,12 +184,7 @@ def sign_tx_with(tx, keys, redeem_script):
         # sigscripts start with OP_0
         asm = "OP_0"
 
-        # get sighash
-        ddata = tx.signature_hash(redeem_script, i, 0x01)
-
-        # make sure the sighash buffer is the right size
-        data_to_sign = h2b("{0:064x}".format(ddata))
-
+        data_to_sign = h2b(get_sighash_hex(tx, i, redeem_script))
         #sign with all keys
         for key in keys:
 
@@ -182,16 +194,32 @@ def sign_tx_with(tx, keys, redeem_script):
             # add sigtype
             sig = b2h(s) + "01"
 
-            # add to script
-            asm += " " + sig
-
-        # compile the script including RS
-        solution = tools.compile(asm + " " + b2h(redeem_script))
-
-        # add solution to input
-        tx.txs_in[i].script = solution
+            tx.txs_in[i].sigs.append(sig)
 
     return tx
+
+def build_tx(tx, redeem_script):
+    for i in range(0, len(tx.txs_in)):
+        asm = "OP_0 " + " ".join(tx.txs_in[i].sigs) + " " + b2h(redeem_script)
+        solution = tools.compile(asm)
+        tx.txs_in[i].script = solution
+    return tx
+
+def add_blockio_signatures(network, from_address, tx, redeem_script):
+    response = get_blockio_signatures(network, from_address, redeem_script, tx)
+    signed_inputs = response.get("inputs", [])
+    for i in range(0, len(signed_inputs)):
+        idx = signed_inputs[i].get("input_no")
+        sig = signed_inputs[i].get("signed_data")
+        tx.txs_in[idx].sigs.insert(0, sig + "01")
+    return tx
+
+def get_sighash_hex(tx, i, redeem_script):
+    # get sighash
+    ddata = tx.signature_hash(redeem_script, i, 0x01)
+
+    # make sure the sighash buffer is the right size
+    return "{0:064x}".format(ddata)
 
 def main():
 
@@ -200,24 +228,20 @@ def main():
 
     parser.add_argument('-t', "--transaction-version", type=int,
                         help='Transaction version, either 1 (default) or 3 (not yet supported).')
-
     parser.add_argument('-n', "--network", required=True,
                         help='Define network code, accepted are: (BTC, DOGE, LTC, BTCTEST, DOGETEST, LTCTEST.')
-
     parser.add_argument('-s', "--sweep-address", required=True, action="append",
                         help='The address you want to sweep from')
-
     parser.add_argument('-d', "--destination-address", required=True, action="append",
                         help='The address you want to sweep to')
-
     parser.add_argument('-k', "--key", action="append",
                         help='The WIF keys with which to sign the address')
-
     parser.add_argument('-r', '--redeem-script', action="append", required=True,
                         help='The redeem script for the swept address')
-
     parser.add_argument('-p', '--push', action="store_true",
                         help='Push the fully signed tx to the network')
+    parser.add_argument('-b', '--blockio-sign', action="store_true",
+                        help='Sign with keys from this block.io API KEY')
 
     args = parser.parse_args()
 
@@ -233,7 +257,7 @@ def main():
     else:
         to_address = args.destination_address[0]
 
-    if not args.network or not NETWORK_FEES[args.network]:
+    if not args.network or not args.network in NETWORK_FEES:
         print("Expecting a valid network (-n)!")
         print("Valid values are: BTC, DOGE, LTC, BTCTEST, DOGETEST, LTCTEST")
         exit(1)
@@ -250,7 +274,7 @@ def main():
             keys.append(SigningKey.from_string(get_key_from_wif(key), SECP256k1, sha256))
 
     # Redeemscript
-    rs_bin = h2b(args.redeem_script[0])
+    rs_bin = tools.compile(args.redeem_script[0])
 
     # Calc number of required keys from redeemscript
     keyreq = required_keys(rs_bin)
@@ -272,17 +296,26 @@ def main():
 
     signed_tx = sign_tx_with(tx, keys, rs_bin)
 
-    if len(keys) < keyreq:
+    if len(keys) < keyreq and args.blockio_api_key:
+            signed_tx = add_blockio_signatures(args.network, from_address, signed_tx, rs_bin)
+
+    built_tx = build_tx(signed_tx, rs_bin)
+
+    if len(signed_tx.txs_in[0].sigs) < keyreq:
         print("Could not sign for all required keys, printing intermediate transaction...")
-        print(signed_tx.as_hex())
+        print(built_tx.as_hex())
         exit(0)
 
     if args.push:
         # push the tx
-        push_response = sochain_pushtx(args.network, tx)
-        print("Sweep complete!\nNetwork: {0}\nTx hash: {1}".format(push_response.get("network"), push_response.get("txid")))
+        push_response = sochain_pushtx(args.network, built_tx)
+        txid = push_response.get("txid")
+        if not txid:
+            print("Pushing transaction failed, printing transaction...\n{0}".format(built_tx.as_hex()))
+        else:
+            print("Sweep complete!\nNetwork: {0}\nTx hash: {1}".format(push_response.get("network"), txid))
     else:
-        print(signed_tx.as_hex())
+        print(built_tx.as_hex())
 
 if __name__ == '__main__':
     main()
