@@ -17,8 +17,8 @@ from pycoin.serialize import b2h, h2b, h2b_rev, b2h_rev
 from pycoin.tx.script import tools
 from pycoin.tx import Tx, Spendable, TxOut
 
-# set decimal precision for Decimal to 64bit
-getcontext().prec = 64
+# set decimal precision for Decimal to 8 positions
+getcontext().prec = 8
 
 # size estimation constants
 TxComponents = namedtuple('TxComponents',
