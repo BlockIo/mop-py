@@ -21,13 +21,16 @@ from pycoin.tx import Tx, Spendable, TxOut
 getcontext().prec = 8
 
 # size estimation constants
-TxComponents = namedtuple('TxComponents',
-                           ('version', 'in_count', 'out_count', 'locktime', 'in_prevout',
-                            'in_scriptlen', 'in_ops', 'in_m', 'in_seq', 'out_value', 'out_scriptlen', 'out_scriptsize'))
+TxComponents = namedtuple("TxComponents",
+                           ("version", "in_count", "out_count", "locktime", "in_prevout",
+                            "in_scriptlen", "in_ops", "in_m", "in_seq", "out_value", "out_scriptlen", "out_scriptsize"))
 TX_COMPONENTS = TxComponents(4,3,3,4,36,4,3,73,4,8,1,35)
 
 # fee estimation constants
 NETWORK_FEES = {"BTC": Decimal(0.0001), "DOGE": Decimal(1), "LTC": Decimal(0.001), "BTCTEST": Decimal(0.0001), "DOGETEST": Decimal(1), "LTCTEST": Decimal(0.001)}
+
+# static tx version for now
+TX_VERSION = 1
 
 def sochain_get_unspents(network, address):
     #TODO error handling
@@ -77,18 +80,22 @@ def get_random_hex():
     return rhex
 
 def unwif(b58cstr):
-    return base58.b58decode_check(b58cstr)[1:]
+    bytes = base58.b58decode_check(b58cstr)
+    return (bytes[0], bytes[1:])
 
 # extract hash160 from address
 def get_pay_hash(pubkey):
-    bytes = unwif(pubkey)
-    return hexlify(bytes).decode('utf-8')
+    bytes = unwif(pubkey)[1]
+    return hexlify(bytes).decode("utf-8")
 
 def get_key_from_wif(key):
-    private_key = unwif(key)
+    private_key = unwif(key)[1]
     if (len(private_key) == 33):
         private_key = private_key[:-1]
     return private_key
+
+def is_p2sh(address):
+    return unwif(address)[0] in [0x05, 0x16, 0xc4]
 
 # unchecked p2sh script
 def make_payto_script(address):
@@ -132,7 +139,7 @@ def make_bare_tx(network, from_address, to_address, redeem_script, version=1):
     in_amount = Decimal(0);
     est_size = TX_COMPONENTS.version + TX_COMPONENTS.out_count + TX_COMPONENTS.in_count
 
-    # add output size (we'll only have 1)
+    # add output size (we"ll only have 1)
     est_size += TX_COMPONENTS.out_scriptlen + TX_COMPONENTS.out_scriptsize + TX_COMPONENTS.out_scriptlen
 
     unspent_response = sochain_get_unspents(network, from_address)
@@ -171,8 +178,13 @@ def make_bare_tx(network, from_address, to_address, redeem_script, version=1):
     fee = Decimal(math.ceil(est_size / 1000)) * Decimal(1e8) * NETWORK_FEES.get(network)
     out_amount = in_amount - fee
 
+    if (is_p2sh(to_address)):
+        outscript = make_payto_script(to_address)
+    else:
+        outscript = make_payto_address(to_address)
+
     # create output
-    outs.append(TxOut(out_amount, make_payto_script(to_address)))
+    outs.append(TxOut(out_amount, outscript))
 
     # create bare tx without sigs
     tx = Tx(version, ins, outs, 0, spendables)
@@ -200,7 +212,7 @@ def sign_tx_with(tx, keys, redeem_script):
 
 def build_tx(tx, redeem_script):
     for i in range(0, len(tx.txs_in)):
-        asm = "OP_0 " + " ".join(tx.txs_in[i].sigs) + " " + b2h(redeem_script)
+        asm = "OP_0 {sigs} {redeem_script}".format(sigs=" ".join(tx.txs_in[i].sigs), redeem_script=b2h(redeem_script))
         solution = tools.compile(asm)
         tx.txs_in[i].script = solution
     return tx
@@ -226,22 +238,20 @@ def main():
     parser = argparse.ArgumentParser(
     description="Sweeps multisig addresses")
 
-    parser.add_argument('-t', "--transaction-version", type=int,
-                        help='Transaction version, either 1 (default) or 3 (not yet supported).')
-    parser.add_argument('-n', "--network", required=True,
-                        help='Define network code, accepted are: (BTC, DOGE, LTC, BTCTEST, DOGETEST, LTCTEST.')
-    parser.add_argument('-s', "--sweep-address", required=True, action="append",
-                        help='The address you want to sweep from')
-    parser.add_argument('-d', "--destination-address", required=True, action="append",
-                        help='The address you want to sweep to')
-    parser.add_argument('-k', "--key", action="append",
-                        help='The WIF keys with which to sign the address')
-    parser.add_argument('-r', '--redeem-script', action="append", required=True,
-                        help='The redeem script for the swept address')
-    parser.add_argument('-p', '--push', action="store_true",
-                        help='Push the fully signed tx to the network')
-    parser.add_argument('-b', '--blockio-sign', action="store_true",
-                        help='Sign with keys from this block.io API KEY')
+    parser.add_argument("-n", "--network", required=True,
+                        help="Define network code, accepted are: (BTC, DOGE, LTC, BTCTEST, DOGETEST, LTCTEST.")
+    parser.add_argument("-s", "--sweep-address", required=True, action="append",
+                        help="The address you want to sweep from")
+    parser.add_argument("-d", "--destination-address", required=True, action="append",
+                        help="The address you want to sweep to")
+    parser.add_argument("-k", "--key", action="append",
+                        help="The WIF keys with which to sign the address")
+    parser.add_argument("-r", "--redeem-script", action="append", required=True,
+                        help="The redeem script for the swept address, enclose in \"\"")
+    parser.add_argument("-p", "--push", action="store_true",
+                        help="Push the fully signed tx to the network")
+    parser.add_argument("-b", "--blockio-sign", action="store_true",
+                        help="Ask block.io to sign this transaction")
 
     args = parser.parse_args()
 
@@ -266,8 +276,6 @@ def main():
         print("Expecting a redeem script (-r)!")
         exit(1)
 
-    tx_version = args.transaction_version or 1
-
     keys = []
     if args.key:
         for key in args.key:
@@ -279,7 +287,7 @@ def main():
     # Calc number of required keys from redeemscript
     keyreq = required_keys(rs_bin)
 
-    tx = make_bare_tx(args.network, from_address, to_address, rs_bin, tx_version)
+    tx = make_bare_tx(args.network, from_address, to_address, rs_bin, TX_VERSION)
 
     if len(tx.txs_in) < 1:
         print("Address {0} has no balance, aborting...".format(from_address))
@@ -296,7 +304,7 @@ def main():
 
     signed_tx = sign_tx_with(tx, keys, rs_bin)
 
-    if len(keys) < keyreq and args.blockio_api_key:
+    if len(keys) < keyreq and args.blockio_sign:
             signed_tx = add_blockio_signatures(args.network, from_address, signed_tx, rs_bin)
 
     built_tx = build_tx(signed_tx, rs_bin)
@@ -317,5 +325,5 @@ def main():
     else:
         print(built_tx.as_hex())
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
