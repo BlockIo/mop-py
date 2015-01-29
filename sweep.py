@@ -109,9 +109,12 @@ def make_payto_address(address):
 
 # extract required keys from RS
 def required_keys(redeem_script):
-    keyreq = int(redeem_script[0])
+    keyreq = read_int_from_bin(redeem_script[0])
     assert(keyreq & 0x50)
     return keyreq ^ 0x50
+
+def read_int_from_bin(binstr):
+    return int(b2h(binstr), base=16) if six.PY2 else int(binstr);
 
 # calc input estimate based on RS
 def estimate_input_size(redeem_script):
@@ -256,24 +259,24 @@ def main():
     args = parser.parse_args()
 
     if not args.sweep_address:
-        print("Expecting at least 1 sweep address (-s)")
+        six.print_("Expecting at least 1 sweep address (-s)")
         exit(1)
     else:
         from_address = args.sweep_address[0]
 
     if not args.destination_address:
-        print("Expecting at least 1 destination address (-d)")
+        six.print_("Expecting at least 1 destination address (-d)")
         exit(1)
     else:
         to_address = args.destination_address[0]
 
     if not args.network or not args.network in NETWORK_FEES:
-        print("Expecting a valid network (-n)!")
-        print("Valid values are: BTC, DOGE, LTC, BTCTEST, DOGETEST, LTCTEST")
+        six.print_("Expecting a valid network (-n)!")
+        six.print_("Valid values are: BTC, DOGE, LTC, BTCTEST, DOGETEST, LTCTEST")
         exit(1)
 
     if not args.redeem_script:
-        print("Expecting a redeem script (-r)!")
+        six.print_("Expecting a redeem script (-r)!")
         exit(1)
 
     keys = []
@@ -290,16 +293,16 @@ def main():
     tx = make_bare_tx(args.network, from_address, to_address, rs_bin, TX_VERSION)
 
     if len(tx.txs_in) < 1:
-        print("Address {0} has no balance, aborting...".format(from_address))
+        six.print_("Address {0} has no balance, aborting...".format(from_address))
         exit(1)
 
     if not len(keys):
-        print("No signing keys given (-k), printing bare transaction...")
-        print(tx.as_hex())
+        six.print_("No signing keys given (-k), printing bare transaction...")
+        six.print_(tx.as_hex())
         exit(0)
 
     if tx.txs_out[0].coin_value < NETWORK_FEES.get(args.network):
-        print("Out value lower than network fee, aborting...")
+        six.print_("Out value lower than network fee, aborting...")
         exit(1)
 
     signed_tx = sign_tx_with(tx, keys, rs_bin)
@@ -310,8 +313,8 @@ def main():
     built_tx = build_tx(signed_tx, rs_bin)
 
     if len(signed_tx.txs_in[0].sigs) < keyreq:
-        print("Could not sign for all required keys, printing intermediate transaction...")
-        print(built_tx.as_hex())
+        six.print_("Could not sign for all required keys, printing intermediate transaction...")
+        six.print_(built_tx.as_hex())
         exit(0)
 
     if args.push:
@@ -319,11 +322,11 @@ def main():
         push_response = sochain_pushtx(args.network, built_tx)
         txid = push_response.get("txid")
         if not txid:
-            print("Pushing transaction failed, printing transaction...\n{0}".format(built_tx.as_hex()))
+            six.print_("Pushing transaction failed, printing transaction...\n{0}".format(built_tx.as_hex()))
         else:
-            print("Sweep complete!\nNetwork: {0}\nTx hash: {1}".format(push_response.get("network"), txid))
+            six.print_("Sweep complete!\nNetwork: {0}\nTx hash: {1}".format(push_response.get("network"), txid))
     else:
-        print(built_tx.as_hex())
+        six.print_(built_tx.as_hex())
 
 if __name__ == "__main__":
     main()
