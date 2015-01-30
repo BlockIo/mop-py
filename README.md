@@ -11,7 +11,7 @@ Tested with:
 #### Installing
 
 1. clone this repository
-2. install dependencies: ```pip install bas58 ecdsa pycoin requests six```
+2. install dependencies: ```pip install base58 ecdsa pycoin requests six```
 3. run the script ```python sweep.py [arguments]```
 
 #### Command-line arguments:
