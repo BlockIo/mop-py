@@ -95,7 +95,7 @@ def get_key_from_wif(key):
     return private_key
 
 def is_p2sh(address):
-    return unwif(address)[0] in [0x05, 0x16, 0xc4]
+    return hexlify(unwif(address)[0]) in ['05', '16', 'c4']
 
 # unchecked p2sh script
 def make_payto_script(address):
