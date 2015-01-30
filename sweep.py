@@ -66,7 +66,7 @@ def get_blockio_signatures(network, from_address, redeem_script, tx):
             "address": from_address
         })
     data = {"network": network, "reference_id": get_random_hex(), "inputs": inputs }
-    url = "https://dev.block.io:99/api/v2/get_dtrust_signature"
+    url = "https://block.io/api/v2/get_dtrust_signature"
 
     session = requests.session()
     response = session.post(url, data="signature_data={0}".format(json.dumps(data)))
@@ -178,7 +178,7 @@ def make_bare_tx(network, from_address, to_address, redeem_script, version=1):
         est_size += in_size
 
     # calc fee and out amount
-    fee = Decimal(math.ceil(est_size / 1000)) * Decimal(1e8) * NETWORK_FEES.get(network)
+    fee = Decimal(math.ceil(est_size / 1000.0)) * Decimal(1e8) * NETWORK_FEES.get(network)
     out_amount = in_amount - fee
 
     if (is_p2sh(to_address)):
